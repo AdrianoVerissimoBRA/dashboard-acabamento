@@ -298,8 +298,15 @@ let DBF=[];// DB filtrado — usado em todas as renderizações
 let CHARTS={};
 let FLT_DE='',FLT_ATE='',FLT_PRE='all';
 
-// Converte dd/mm para yyyy-mm-dd para comparação
-function toISO(d){if(!d)return'';const[dd,mm]=d.split('/');return'2025-'+mm+'-'+dd;}
+// Converte dd/mm para yyyy-mm-dd inferindo o ano pelo contexto
+function toISO(d){
+  if(!d)return'';
+  const[dd,mm]=d.split('/');
+  // Infere o ano: se mês >= mês atual, provavelmente ano atual; senão ano atual também
+  // Como os dados podem ser de qualquer ano recente, usa o ano atual do browser
+  const ano=new Date().getFullYear();
+  return ano+'-'+mm+'-'+dd;
+}
 // Filtra DB pelo período selecionado e retorna array filtrado
 function applyFlt(){
   if(!FLT_DE&&!FLT_ATE){DBF=[...DB];return;}
