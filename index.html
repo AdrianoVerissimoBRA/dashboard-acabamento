@@ -1008,88 +1008,77 @@ function showENDebug(){
 /* Palavras que indicam linha de TOTAL/SUBTOTAL — devem ser ignoradas */
 const EN_SKIP_FACCAO = new Set(['TOTAL','SUBTOTAL','SOMA','SUM','GRAND TOTAL','TOTAIS','GERAL','','SEM FACÇÃO']);
 const EN_SKIP_PRODUTO = new Set(['TOTAL','SUBTOTAL','SOMA','SUM','GRAND TOTAL','','SEM PRODUTO']);
-/* Quantidade máxima razoável por linha individual (proteção contra linhas de totais acumulados) */
-const EN_MAX_QTD_POR_LINHA = 2000;
 
 function parseENCSV(text){
   const rows=[];
   const lines=text.split('\n');
-  const header=lines[0]||'';
+  if(!lines.length)return rows;
 
-  // Detectar número de colunas e posições a partir do header
-  // Esperado: Facção(A), Data Recebimento(B), Produto(C), Quantidade(D)
-  // Mas pode haver colunas extras antes (ex: ID sequencial)
-  const hcols=splitCSV(header).map(c=>c.trim().replace(/"/g,'').toLowerCase());
-  
-  // Detectar offset: procurar coluna que contém 'data' ou 'receb'
-  let idxData=-1, idxFac=-1, idxProd=-1, idxQtd=-1;
-  hcols.forEach((h,i)=>{
-    if(idxData<0 && (h.includes('data')||h.includes('receb')||h.includes('dt')))idxData=i;
-    if(idxFac<0  && (h.includes('fac')||h.includes('fornec')||h.includes('empresa')))idxFac=i;
-    if(idxProd<0 && (h.includes('prod')||h.includes('item')||h.includes('descr')||h.includes('ref')))idxProd=i;
-    if(idxQtd<0  && (h.includes('qtd')||h.includes('quant')||h.includes('pec')||h.includes('total')||h.includes('volume')))idxQtd=i;
+  const hcols=splitCSV(lines[0]).map(function(c){return c.trim().replace(/"/g,'').toLowerCase();});
+  console.log('[EN] Header ('+hcols.length+' colunas):', hcols.join(' | '));
+
+  // --- DETECCAO DE INDICES ---
+  // Prioridade 1: busca por nome no header
+  // Prioridade 2: posicoes fixas conforme planilha Karina
+  //   B=1 (data recebimento), Q=16 (total pecas)
+  //   A=0 (faccao), primeira coluna de texto como produto
+
+  var idxData = -1, idxFac = -1, idxProd = -1, idxQtd = -1;
+
+  hcols.forEach(function(h,i){
+    if(idxData<0 && (h.includes('data') || h.includes('receb') || h.includes('dt ')))idxData=i;
+    if(idxFac<0  && (h.includes('fac')  || h.includes('fornec') || h.includes('empresa') || h.includes('costureira')))idxFac=i;
+    if(idxProd<0 && (h.includes('ref')  || h.includes('prod')   || h.includes('descr')   || h.includes('item') || h.includes('modelo') || h.includes('artigo')))idxProd=i;
+    // "total" so aceita se for a ultima ou proxima das ultimas colunas (evita pegar coluna "data total" etc)
+    if(idxQtd<0  && (h.includes('qtd')  || h.includes('quant')  || h.includes('total pec') || h.includes('pecas') || h.includes('volume')))idxQtd=i;
   });
 
-  // Fallback: assumir posições padrão A=faccao, B=data, C=produto, D=qtd
-  if(idxFac<0) idxFac=0;
-  if(idxData<0) idxData=1;
-  if(idxProd<0) idxProd=2;
-  if(idxQtd<0) idxQtd=3;
+  // Fallback fixo: planilha Karina tem B=data, Q=total, A=faccao
+  if(idxData<0) idxData = 1;   // coluna B
+  if(idxQtd<0)  idxQtd  = 16;  // coluna Q
+  if(idxFac<0)  idxFac  = 0;   // coluna A
+  if(idxProd<0){
+    // usar primeira coluna numerica diferente de qtd e entre 2 e 15
+    idxProd = 2; // coluna C como fallback
+  }
 
-  console.log('[EN Parse] Header detectado:', JSON.stringify(hcols));
-  console.log('[EN Parse] Índices: fac='+idxFac+' data='+idxData+' prod='+idxProd+' qtd='+idxQtd);
+  console.log('[EN] Indices usados: fac='+idxFac+' data='+idxData+' prod='+idxProd+' qtd='+idxQtd);
 
-  const ignoradas=[];
-  lines.slice(1).forEach((line,lineIdx)=>{
+  var skipped=0;
+  lines.slice(1).forEach(function(line, lineIdx){
     if(!line.trim())return;
-    const c=splitCSV(line);
-    const maxIdx=Math.max(idxFac,idxData,idxProd,idxQtd);
-    if(c.length<=maxIdx)return;
+    var c=splitCSV(line);
+    // linha precisa ter ao menos ate a coluna Q (idx 16)
+    if(c.length <= idxQtd){skipped++;return;}
 
-    const faccaoRaw=(c[idxFac]||'').trim().replace(/"/g,'');
-    const faccao=faccaoRaw.toUpperCase();
-    
-    // Filtrar linhas de TOTAL / cabeçalhos repetidos
-    if(EN_SKIP_FACCAO.has(faccao))return;
-    // Filtrar se facção começa com número apenas (linha de sequência/total)
-    if(/^\d+$/.test(faccao))return;
-    // Filtrar se a célula de facção contém palavras de total
-    if(/^(total|soma|sub[\s-]?total|grand)/i.test(faccaoRaw))return;
-
-    const rawDate=(c[idxData]||'').trim().replace(/"/g,'');
-    const dt=parseENDate(rawDate);
+    // DATA (coluna B)
+    var rawDate=(c[idxData]||'').trim().replace(/"/g,'');
+    var dt=parseENDate(rawDate);
     if(!dt)return;
 
-    const produtoRaw=(c[idxProd]||'').trim().replace(/"/g,'');
-    const produto=produtoRaw.toUpperCase()||'SEM PRODUTO';
-    if(EN_SKIP_PRODUTO.has(produto))return;
+    // FACCAO (coluna A)
+    var faccaoRaw=(c[idxFac]||'').trim().replace(/"/g,'');
+    var faccao=faccaoRaw.toUpperCase();
+    if(!faccaoRaw || /^(total|soma|subtotal|grand)/i.test(faccaoRaw))return;
 
-    const qtdRaw=(c[idxQtd]||'0').replace(/"/g,'').replace(',','.').trim();
-    const qtd=parseInt(parseFloat(qtdRaw)||0);
-    if(!qtd||qtd<=0)return;
+    // PRODUTO (coluna C ou detectada)
+    var produtoRaw=(c[idxProd]||'').trim().replace(/"/g,'');
+    var produto=produtoRaw.toUpperCase()||'SEM PRODUTO';
 
-    // Proteção contra linhas de totais acumulados (valores muito altos por linha)
-    if(qtd>EN_MAX_QTD_POR_LINHA){
-      ignoradas.push({linha:lineIdx+2, faccao:faccaoRaw, data:rawDate, produto:produtoRaw, qtd, motivo:'qtd acima do limite '+EN_MAX_QTD_POR_LINHA});
-      return;
-    }
+    // QUANTIDADE (coluna Q) - valor principal
+    var qtdRaw=(c[idxQtd]||'').replace(/"/g,'').replace(/\./g,'').replace(',','.').trim();
+    var qtd=parseInt(parseFloat(qtdRaw)||0);
+    if(!qtd || qtd<=0)return;
 
-    rows.push({data:dt, faccao, produto, qtd});
+    rows.push({data:dt, faccao:faccao||'SEM FACCAO', produto:produto, qtd:qtd});
   });
 
-  console.log('[EN Parse] Registros válidos:', rows.length);
-  if(ignoradas.length){
-    console.warn('[EN Parse] Linhas ignoradas por qtd alta:', ignoradas.length);
-    ignoradas.forEach(r=>console.warn('  Linha '+r.linha+': '+r.faccao+' | '+r.data+' | '+r.produto+' | qtd='+r.qtd+' ('+r.motivo+')'));
-  }
-
-  // Debug: mostrar totais por dia para validação
-  if(rows.length>0){
-    const byD={};
-    rows.forEach(r=>{byD[r.data]=(byD[r.data]||0)+r.qtd;});
-    const sorted=Object.entries(byD).sort((a,b)=>b[1]-a[1]).slice(0,5);
-    console.log('[EN Parse] Top 5 dias por volume:', sorted.map(([d,t])=>d+'='+t).join(', '));
-  }
+  // Log de validacao
+  console.log('[EN] Registros carregados: '+rows.length+' | Linhas curtas ignoradas: '+skipped);
+  var byD={};
+  rows.forEach(function(r){byD[r.data]=(byD[r.data]||0)+r.qtd;});
+  var top=Object.entries(byD).sort(function(a,b){return b[1]-a[1];}).slice(0,8);
+  console.log('[EN] Top dias:', top.map(function(x){return x[0]+'='+x[1].toLocaleString('pt-BR');}).join(' | '));
 
   return rows;
 }
